@@ -62,11 +62,8 @@ ControlUnit cu (
 );
 
 wire [7:0] read_data1, read_data2;
-
-//////////////////// WB signals ////////////////////
 wire [7:0] write_back_data;
 
-//////////////////// Register File ////////////////////
 RegisterFile rf (
     .clk(clk),
     .write_enable(MEM_WB_reg_write),
@@ -78,10 +75,23 @@ RegisterFile rf (
     .read_data2(read_data2)
 );
 
-//////////////////// HAZARD ////////////////////
+//////////////////// ID/EX ////////////////////
+reg [7:0] ID_EX_A, ID_EX_B;
+reg [2:0] ID_EX_rs1, ID_EX_rs2, ID_EX_rd;
+reg ID_EX_reg_write, ID_EX_mem_write, ID_EX_mem_read, ID_EX_mem_to_reg;
+reg ID_EX_alu_src;
+reg [2:0] ID_EX_alu_control;
+
+//////////////////// Hazard Unit ////////////////////
 wire stall;
-assign stall = (ID_EX_mem_read &&
-               ((ID_EX_rd == rs1) || (ID_EX_rd == rs2)));
+
+HazardUnit hazard (
+    .ID_EX_mem_read(ID_EX_mem_read),
+    .ID_EX_rd(ID_EX_rd),
+    .IF_ID_rs1(rs1),
+    .IF_ID_rs2(rs2),
+    .stall(stall)
+);
 
 //////////////////// IF/ID UPDATE ////////////////////
 always @(posedge clk or posedge reset) begin
@@ -91,13 +101,7 @@ always @(posedge clk or posedge reset) begin
         IF_ID_instr <= instr_IF;
 end
 
-//////////////////// ID/EX ////////////////////
-reg [7:0] ID_EX_A, ID_EX_B;
-reg [2:0] ID_EX_rs1, ID_EX_rs2, ID_EX_rd;
-reg ID_EX_reg_write, ID_EX_mem_write, ID_EX_mem_read, ID_EX_mem_to_reg;
-reg ID_EX_alu_src;
-reg [2:0] ID_EX_alu_control;
-
+//////////////////// ID/EX UPDATE ////////////////////
 always @(posedge clk or posedge reset) begin
     if (reset) begin
         ID_EX_reg_write <= 0;
@@ -126,38 +130,26 @@ always @(posedge clk or posedge reset) begin
     end
 end
 
-//////////////////// FORWARDING ////////////////////
-reg [1:0] forwardA, forwardB;
+//////////////////// Forwarding ////////////////////
+wire [1:0] forwardA, forwardB;
 
-always @(*) begin
-    forwardA = 2'b00;
-    forwardB = 2'b00;
+ForwardingUnit fwd (
+    .EX_MEM_reg_write(EX_MEM_reg_write),
+    .MEM_WB_reg_write(MEM_WB_reg_write),
+    .EX_MEM_rd(EX_MEM_rd),
+    .MEM_WB_rd(MEM_WB_rd),
+    .ID_EX_rs1(ID_EX_rs1),
+    .ID_EX_rs2(ID_EX_rs2),
+    .forwardA(forwardA),
+    .forwardB(forwardB)
+);
 
-    if (EX_MEM_reg_write && (EX_MEM_rd != 0) &&
-        (EX_MEM_rd == ID_EX_rs1))
-        forwardA = 2'b10;
-
-    if (EX_MEM_reg_write && (EX_MEM_rd != 0) &&
-        (EX_MEM_rd == ID_EX_rs2))
-        forwardB = 2'b10;
-
-    if (MEM_WB_reg_write && (MEM_WB_rd != 0) &&
-        (MEM_WB_rd == ID_EX_rs1))
-        forwardA = 2'b01;
-
-    if (MEM_WB_reg_write && (MEM_WB_rd != 0) &&
-        (MEM_WB_rd == ID_EX_rs2))
-        forwardB = 2'b01;
-end
-
-wire [7:0] forwardA_data, forwardB_data;
-
-assign forwardA_data =
+wire [7:0] forwardA_data =
     (forwardA == 2'b10) ? EX_MEM_alu :
     (forwardA == 2'b01) ? write_back_data :
     ID_EX_A;
 
-assign forwardB_data =
+wire [7:0] forwardB_data =
     (forwardB == 2'b10) ? EX_MEM_alu :
     (forwardB == 2'b01) ? write_back_data :
     ID_EX_B;
