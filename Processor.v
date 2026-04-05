@@ -7,15 +7,15 @@ module Processor (
 );
 
 //////////////////// IF ////////////////////
-wire [15:0] instr_IF, pc_IF;
-wire [15:0] next_pc;
+wire [15:0] instr_IF, pc_IF, next_pc;
+wire PCWrite;
 
 assign next_pc = pc_IF + 1;
 
 InstructionFetch if_stage (
     .clk(clk),
     .reset(reset),
-    .next_pc(next_pc),
+    .next_pc(PCWrite ? next_pc : pc_IF),  // ✅ stall support
     .instruction(instr_IF),
     .pc_out(pc_IF)
 );
@@ -75,15 +75,9 @@ RegisterFile rf (
     .read_data2(read_data2)
 );
 
-//////////////////// ID/EX ////////////////////
-reg [7:0] ID_EX_A, ID_EX_B;
-reg [2:0] ID_EX_rs1, ID_EX_rs2, ID_EX_rd;
-reg ID_EX_reg_write, ID_EX_mem_write, ID_EX_mem_read, ID_EX_mem_to_reg;
-reg ID_EX_alu_src;
-reg [2:0] ID_EX_alu_control;
-
-//////////////////// Hazard Unit ////////////////////
+//////////////////// Hazard ////////////////////
 wire stall;
+assign PCWrite = ~stall;
 
 HazardUnit hazard (
     .ID_EX_mem_read(ID_EX_mem_read),
@@ -101,7 +95,13 @@ always @(posedge clk or posedge reset) begin
         IF_ID_instr <= instr_IF;
 end
 
-//////////////////// ID/EX UPDATE ////////////////////
+//////////////////// ID/EX ////////////////////
+reg [7:0] ID_EX_A, ID_EX_B, ID_EX_imm;
+reg [2:0] ID_EX_rs1, ID_EX_rs2, ID_EX_rd;
+reg ID_EX_reg_write, ID_EX_mem_write, ID_EX_mem_read, ID_EX_mem_to_reg;
+reg ID_EX_alu_src;
+reg [2:0] ID_EX_alu_control;
+
 always @(posedge clk or posedge reset) begin
     if (reset) begin
         ID_EX_reg_write <= 0;
@@ -117,6 +117,7 @@ always @(posedge clk or posedge reset) begin
     else begin
         ID_EX_A <= read_data1;
         ID_EX_B <= read_data2;
+        ID_EX_imm <= {{2{1'b0}}, IF_ID_instr[5:0]};  // ✅ FIXED
         ID_EX_rs1 <= rs1;
         ID_EX_rs2 <= rs2;
         ID_EX_rd <= rd;
@@ -155,9 +156,7 @@ wire [7:0] forwardB_data =
     ID_EX_B;
 
 //////////////////// EX ////////////////////
-wire [7:0] alu_in2 = ID_EX_alu_src ?
-                     {{2{1'b0}}, IF_ID_instr[5:0]} :
-                     forwardB_data;
+wire [7:0] alu_in2 = ID_EX_alu_src ? ID_EX_imm : forwardB_data;
 
 wire [7:0] alu_out;
 wire carry, negative, overflow;
