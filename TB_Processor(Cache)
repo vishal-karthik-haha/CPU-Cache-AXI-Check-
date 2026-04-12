@@ -1,0 +1,186 @@
+`timescale 1ns / 1ps
+
+module Processor_tb;
+
+reg clk;
+reg reset;
+
+wire [15:0] pc_out;
+wire [15:0] instruction;
+wire [7:0]  alu_result;
+
+// ============================================================
+// DUT
+// ============================================================
+Processor uut (
+    .clk        (clk),
+    .reset      (reset),
+    .pc_out     (pc_out),
+    .instruction(instruction),
+    .alu_result (alu_result)
+);
+
+// ============================================================
+// Clock — 10ns period
+// ============================================================
+initial begin
+    clk = 0;
+    forever #5 clk = ~clk;
+end
+
+// ============================================================
+// Reset
+// ============================================================
+initial begin
+    reset = 1;
+    #12;
+    reset = 0;
+end
+
+// ============================================================
+// Waveform dump
+// ============================================================
+initial begin
+    $dumpfile("wave.vcd");
+    $dumpvars(0, Processor_tb);
+end
+
+// ============================================================
+// Counters
+// ============================================================
+integer cycle        = 0;
+integer stall_cycles = 0;
+integer cache_miss_count  = 0;
+integer load_use_count    = 0;
+
+// ============================================================
+// Expected ALU results (same as original TB)
+// ============================================================
+reg [7:0] expected [0:3];
+initial begin
+    expected[0] = 8;   // ADD: 5 + 3
+    expected[1] = 5;   // SUB: 8 - 3
+    expected[2] = 0;   // AND
+    expected[3] = 5;   // OR
+end
+
+// ============================================================
+// Previous-cycle stall flags (to detect rising edges)
+// ============================================================
+reg prev_cache_stall    = 0;
+reg prev_load_use_stall = 0;
+
+// ============================================================
+// Main monitor
+// ============================================================
+always @(posedge clk) begin
+    cycle = cycle + 1;
+
+    // --------------------------------------------------------
+    // Count stall cycles
+    // --------------------------------------------------------
+    if (uut.stall)
+        stall_cycles = stall_cycles + 1;
+
+    // Count distinct cache miss events (rising edge of cache_stall)
+    if (uut.cache_stall && !prev_cache_stall)
+        cache_miss_count = cache_miss_count + 1;
+
+    // Count distinct load-use events (rising edge of load_use_stall)
+    if (uut.load_use_stall && !prev_load_use_stall)
+        load_use_count = load_use_count + 1;
+
+    prev_cache_stall    = uut.cache_stall;
+    prev_load_use_stall = uut.load_use_stall;
+
+    // --------------------------------------------------------
+    // Per-cycle display
+    // --------------------------------------------------------
+    $display("Cycle=%0d | PC=%0d | Instr=%b | ALU=%0d | stall=%b | cache_stall=%b | load_use=%b",
+             cycle, pc_out, instruction, alu_result,
+             uut.stall, uut.cache_stall, uut.load_use_stall);
+
+    // --------------------------------------------------------
+    // Cache stall events
+    // --------------------------------------------------------
+    if (uut.cache_stall && !prev_cache_stall)
+        $display("  >> CACHE MISS  at cycle %0d  addr=0x%0h  (cache line index=%0b)",
+                 cycle,
+                 uut.EX_MEM_alu,
+                 uut.dcache.addr_index);
+
+    if (!uut.cache_stall && prev_cache_stall)
+        $display("  >> CACHE MISS RESOLVED at cycle %0d", cycle);
+
+    // --------------------------------------------------------
+    // Load-use stall events
+    // --------------------------------------------------------
+    if (uut.load_use_stall && !prev_load_use_stall)
+        $display("  >> LOAD-USE STALL at cycle %0d  ID_EX_rd=%0d  rs1=%0d  rs2=%0d",
+                 cycle,
+                 uut.ID_EX_rd,
+                 uut.rs1,
+                 uut.rs2);
+
+    // --------------------------------------------------------
+    // Forwarding activity
+    // --------------------------------------------------------
+    if (uut.forwardA != 2'b00 || uut.forwardB != 2'b00)
+        $display("  >> FORWARDING  forwardA=%b  forwardB=%b",
+                 uut.forwardA, uut.forwardB);
+
+    // --------------------------------------------------------
+    // PC sanity check
+    // --------------------------------------------------------
+    if (pc_out > 20) begin
+        $display("ERROR: PC runaway at cycle %0d", cycle);
+        $stop;
+    end
+
+    // --------------------------------------------------------
+    // ALU result checks (after pipeline fills, skip stall cycles)
+    // --------------------------------------------------------
+    if (!uut.stall && cycle > 5 && cycle < 15) begin
+        case (pc_out)
+            1: if (alu_result !== expected[0])
+                   $display("  !! ERROR ADD   expected=%0d  got=%0d", expected[0], alu_result);
+            2: if (alu_result !== expected[1])
+                   $display("  !! ERROR SUB   expected=%0d  got=%0d", expected[1], alu_result);
+            3: if (alu_result !== expected[2])
+                   $display("  !! ERROR AND   expected=%0d  got=%0d", expected[2], alu_result);
+            4: if (alu_result !== expected[3])
+                   $display("  !! ERROR OR    expected=%0d  got=%0d", expected[3], alu_result);
+        endcase
+    end
+
+    // --------------------------------------------------------
+    // Cache internal state snapshot (every 10 cycles for debug)
+    // --------------------------------------------------------
+    if (cycle % 10 == 0) begin
+        $display("  -- Cache state @ cycle %0d --", cycle);
+        $display("     valid=%b%b%b%b%b%b%b%b",
+                 uut.dcache.valid[7], uut.dcache.valid[6],
+                 uut.dcache.valid[5], uut.dcache.valid[4],
+                 uut.dcache.valid[3], uut.dcache.valid[2],
+                 uut.dcache.valid[1], uut.dcache.valid[0]);
+    end
+
+end
+
+// ============================================================
+// Final summary
+// ============================================================
+initial begin
+    #200;
+    $display("================================================");
+    $display("Simulation complete.");
+    $display("  Total cycles      : %0d", cycle);
+    $display("  Total stall cycles: %0d", stall_cycles);
+    $display("  Cache misses      : %0d", cache_miss_count);
+    $display("  Load-use stalls   : %0d", load_use_count);
+    $display("  Effective CPI     : %0f", (1.0 * cycle) / (cycle - stall_cycles + 1));
+    $display("================================================");
+    $finish;
+end
+
+endmodule
